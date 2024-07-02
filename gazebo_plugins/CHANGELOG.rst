@@ -2,8 +2,8 @@
 Changelog for package gazebo_plugins
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+3.8.0 (2024-07-02)
+------------------
 * Bloom-ignored all the packages except gazebo_msgs on jazzy (`#1534 <https://github.com/ros-simulation/gazebo_ros_pkgs/issues/1534>`_)
 * Structured point cloud (`#1447 <https://github.com/ros-simulation/gazebo_ros_pkgs/issues/1447>`_)
 * [ros2] Add steerangle publisher to ackermann_drive (`#1518 <https://github.com/ros-simulation/gazebo_ros_pkgs/issues/1518>`_)

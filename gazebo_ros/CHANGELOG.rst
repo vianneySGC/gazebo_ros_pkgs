@@ -2,8 +2,8 @@
 Changelog for package gazebo_ros
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+3.8.0 (2024-07-02)
+------------------
 * Bloom-ignored all the packages except gazebo_msgs on jazzy (`#1534 <https://github.com/ros-simulation/gazebo_ros_pkgs/issues/1534>`_)
 * Changed Throttler to use simTime instead of realTime (`#1325 <https://github.com/ros-simulation/gazebo_ros_pkgs/issues/1325>`_)
   Changed Throttler for the clock publisher to use simTime instead of realTime. This fixes gazebo_ros_pkgs`#1324 <https://github.com/ros-simulation/gazebo_ros_pkgs/issues/1324>`_ and should allow ROS applications to continue to cooperate with Gazebo when the simulation is paused and is being stepped.
