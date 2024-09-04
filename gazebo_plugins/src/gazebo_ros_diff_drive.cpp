@@ -158,7 +158,7 @@ void GazeboRosDiffDrive::Load ( physics::ModelPtr _parent, sdf::ElementPtr _sdf 
 
     ros::SubscribeOptions so =
         ros::SubscribeOptions::create<geometry_msgs::Twist>(command_topic_, 1,
-                boost::bind(&GazeboRosDiffDrive::cmdVelCallback, this, _1),
+                boost::bind(&GazeboRosDiffDrive::cmdVelCallback, this, boost::placeholders::_1),
                 ros::VoidPtr(), &queue_);
 
     cmd_vel_subscriber_ = gazebo_ros_->node()->subscribe(so);
