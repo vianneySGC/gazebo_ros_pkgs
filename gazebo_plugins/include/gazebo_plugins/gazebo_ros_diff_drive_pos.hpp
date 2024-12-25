@@ -106,6 +106,8 @@ protected:
   void Load(gazebo::physics::ModelPtr _model, sdf::ElementPtr _sdf) override;
 
   // Documentation inherited
+
+
   void Reset() override;
 
 private:

@@ -49,13 +49,14 @@
  * \author   Markus Bader <markus.bader@tuwien.ac.at>
  * \date 22th of May 2014
  */
-
+#include "interfaces_cdf/msg/cmd_pos.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include <gazebo/common/Time.hh>
 #include <gazebo/physics/Joint.hh>
 #include <gazebo/physics/Link.hh>
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/World.hh>
-#include <gazebo_plugins/gazebo_ros_diff_drive.hpp>
+#include <gazebo_plugins/gazebo_ros_diff_drive_pos.hpp>
 #include <gazebo_ros/conversions/builtin_interfaces.hpp>
 #include <gazebo_ros/conversions/geometry_msgs.hpp>
 #include <gazebo_ros/node.hpp>
@@ -111,8 +112,11 @@ public:
   void OnUpdate(const gazebo::common::UpdateInfo & _info);
 
   /// Callback when a velocity command is received.
-  /// \param[in] _msg Twist command message.
-  void OnCmdVel(const geometry_msgs::msg::Twist::SharedPtr _msg);
+  /// \param[in] _msg CmdPos command message.
+  void OnCmdPos(const interfaces_cdf::msg::CmdPos::SharedPtr _msg);
+
+  /// return wheel goal position according to the position commands on the topic cmd_pos
+  void UpdateWheelGoalPosition();
 
   /// Update wheel velocities according to latest target velocities.
   void UpdateWheelVelocities();
@@ -139,8 +143,8 @@ public:
   /// A pointer to the GazeboROS node.
   gazebo_ros::Node::SharedPtr ros_node_;
 
-  /// Subscriber to command velocities
-  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
+  /// Subscriber to command positions
+  rclcpp::Subscription<interfaces_cdf::msg::CmdPos>::SharedPtr cmd_pos_sub_;
 
   /// Odometry publisher
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odometry_pub_;
@@ -159,6 +163,12 @@ public:
 
   /// Maximum wheel acceleration
   double max_wheel_accel_;
+
+  /// Maximum wheel speed
+  double max_wheel_speed_;
+
+  /// Goal angle tolerance
+  double goal_angle_tolerance_;
 
   /// Desired wheel speed.
   std::vector<double> desired_wheel_speed_;
@@ -222,6 +232,12 @@ public:
 
   /// Covariance in odometry
   double covariance_[3];
+
+  // whether or not we are ready to receive new command
+  bool available_;
+
+  // Goal angle for each wheel
+  std::vector<double> wheel_goal_angle_;
 };
 
 GazeboRosDiffDrive::GazeboRosDiffDrive()
@@ -252,11 +268,15 @@ void GazeboRosDiffDrive::Load(gazebo::physics::ModelPtr _model, sdf::ElementPtr 
       impl_->ros_node_->get_logger(),
       "Drive requires at least one pair of wheels. Setting [num_wheel_pairs] to 1");
   }
-
+  //ready to receive new command
+  impl_->available_= true;
+  
   // Dynamic properties
   impl_->max_wheel_accel_ = _sdf->Get<double>("max_wheel_acceleration", 0.0).first;
   impl_->max_wheel_torque_ = _sdf->Get<double>("max_wheel_torque", 5.0).first;
+  impl_->max_wheel_speed_ = _sdf->Get<double>("max_wheel_speed", 5.0).first;
 
+  impl_->goal_angle_tolerance_ = _sdf->Get<double>("goal_angle_tolerance", 0.1).first;
   // Get joints and Kinematic properties
   std::vector<gazebo::physics::JointPtr> left_joints, right_joints;
 
@@ -307,6 +327,8 @@ void GazeboRosDiffDrive::Load(gazebo::physics::ModelPtr _model, sdf::ElementPtr 
   }
 
   index = 0;
+
+  impl_->wheel_goal_angle_.assign(impl_->num_wheel_pairs_, 0);
   impl_->wheel_separation_.assign(impl_->num_wheel_pairs_, 0.34);
   for (auto wheel_separation = _sdf->GetElement("wheel_separation"); wheel_separation != nullptr;
     wheel_separation = wheel_separation->GetNextElement("wheel_separation"))
@@ -350,13 +372,13 @@ void GazeboRosDiffDrive::Load(gazebo::physics::ModelPtr _model, sdf::ElementPtr 
   }
   impl_->last_update_time_ = _model->GetWorld()->SimTime();
 
-  impl_->cmd_vel_sub_ = impl_->ros_node_->create_subscription<geometry_msgs::msg::Twist>(
-    "cmd_vel", qos.get_subscription_qos("cmd_vel", rclcpp::QoS(1)),
-    std::bind(&GazeboRosDiffDrivePrivate::OnCmdVel, impl_.get(), std::placeholders::_1));
+  impl_->cmd_pos_sub_ = impl_->ros_node_->create_subscription<interfaces_cdf::msg::CmdPos>(
+    "cmd_pos", qos.get_subscription_qos("cmd_pos", rclcpp::QoS(1)),
+    std::bind(&GazeboRosDiffDrivePrivate::OnCmdPos, impl_.get(), std::placeholders::_1));
 
   RCLCPP_INFO(
     impl_->ros_node_->get_logger(), "Subscribed to [%s]",
-    impl_->cmd_vel_sub_->get_topic_name());
+    impl_->cmd_pos_sub_->get_topic_name());
 
   // Odometry
   impl_->odometry_frame_ = _sdf->Get<std::string>("odometry_frame", "odom").first;
@@ -534,24 +556,94 @@ void GazeboRosDiffDrivePrivate::OnUpdate(const gazebo::common::UpdateInfo & _inf
   last_update_time_ = _info.simTime;
 }
 
-void GazeboRosDiffDrivePrivate::UpdateWheelVelocities()
+void GazeboRosDiffDrivePrivate::UpdateWheelGoalPosition()
 {
-  std::lock_guard<std::mutex> scoped_lock(lock_);
+//calcule la position courante des roues
+//calcule la position des roues a atteindre
 
-  double vr = target_x_;
-  double va = target_rot_;
+  std::vector<double> current_position(2 * num_wheel_pairs_);
+  
 
   for (unsigned int i = 0; i < num_wheel_pairs_; ++i) {
-    desired_wheel_speed_[2 * i + LEFT] = vr - va * wheel_separation_[i] / 2.0;
-    desired_wheel_speed_[2 * i + RIGHT] = vr + va * wheel_separation_[i] / 2.0;
+    current_position[2 * i + LEFT] = joints_[2 * i + LEFT]->Position(0) ;
+    current_position[2 * i + RIGHT] = joints_[2 * i + RIGHT]->Position(0) ;
   }
+
+
+  for (unsigned int i = 0; i < num_wheel_pairs_; ++i) {
+    wheel_goal_angle_[2 * i + LEFT] = current_position[2*i + LEFT] + (target_x_-target_rot_*wheel_separation_[i] / 2.0)  / (wheel_diameter_[i] / 2.0);
+    wheel_goal_angle_[2 * i + RIGHT] = current_position[2*i + RIGHT] + (target_x_+target_rot_*wheel_separation_[i] / 2.0) / (wheel_diameter_[i] / 2.0);
+  }
+
 }
 
-void GazeboRosDiffDrivePrivate::OnCmdVel(const geometry_msgs::msg::Twist::SharedPtr _msg)
+void GazeboRosDiffDrivePrivate::UpdateWheelVelocities()
 {
+  //prend la position actuelle des roues
+  //calcule l'écrat realtif
+  //en déduit une vitese a suivre pour chaque roue
+
   std::lock_guard<std::mutex> scoped_lock(lock_);
-  target_x_ = _msg->linear.x;
-  target_rot_ = _msg->angular.z;
+
+
+  double diff;
+
+  //current position
+  std::vector<double> current_position(2 * num_wheel_pairs_);
+
+for (unsigned int i = 0; i < num_wheel_pairs_; ++i) {
+    current_position[2 * i + LEFT] = joints_[2 * i + LEFT]->Position(0);
+    current_position[2 * i + RIGHT] = joints_[2 * i + RIGHT]->Position(0);
+}
+
+// Update wheel desired speed
+for (unsigned int i = 0; i < num_wheel_pairs_; ++i) {
+    if (abs(current_position[2 * i + LEFT] - wheel_goal_angle_[2 * i + LEFT]) <= goal_angle_tolerance_) {
+        desired_wheel_speed_[2 * i + LEFT] = 0;
+    } else {
+        diff = current_position[2 * i + LEFT] - wheel_goal_angle_[2 * i + LEFT];
+        desired_wheel_speed_[2 * i + LEFT] = -((diff > 0) - (diff < 0)) * max_wheel_speed_;
+    }
+
+    if (abs(current_position[2 * i + RIGHT] - wheel_goal_angle_[2 * i + RIGHT]) <= goal_angle_tolerance_) {
+        desired_wheel_speed_[2 * i + RIGHT] = 0;
+    } else {
+        diff = current_position[2 * i + RIGHT] - wheel_goal_angle_[2 * i + RIGHT];
+        desired_wheel_speed_[2 * i + RIGHT] = -((diff > 0) - (diff < 0)) * max_wheel_speed_;
+    }
+}
+
+  if (std::all_of(desired_wheel_speed_.begin(), desired_wheel_speed_.end(), [](double value) { return value == 0.0; })){
+    available_=true;
+
+  }
+
+  }
+
+
+void GazeboRosDiffDrivePrivate::OnCmdPos(const interfaces_cdf::msg::CmdPos::SharedPtr _msg)
+{
+  RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Got new input on cmd_pos");
+  std::lock_guard<std::mutex> scoped_lock(lock_);
+
+  //si on est pas en train d'exécuter une tâche
+  if (available_){
+    target_x_ = _msg->linear;
+    target_rot_ = _msg->angular;
+
+    available_=false;
+    //une fois qu'on a reçu le message de position on calcule l'angle objectif pour chaque roue
+    GazeboRosDiffDrivePrivate::UpdateWheelGoalPosition();
+    RCLCPP_INFO(ros_node_->get_logger(),"left joint current position : %f",joints_[LEFT]->Position(0));
+    RCLCPP_INFO(ros_node_->get_logger(),"left joint goal position : %f",wheel_goal_angle_[LEFT]);
+  }
+  else{
+    RCLCPP_INFO(ros_node_->get_logger(),"Already working...");
+}
+
+
 }
 
 void GazeboRosDiffDrivePrivate::UpdateOdometryEncoder(const gazebo::common::Time & _current_time)
